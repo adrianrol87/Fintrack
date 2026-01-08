@@ -8,6 +8,7 @@
 import SwiftUI
 import UIKit
 
+
 // MARK: - Bank Catalog
 
 struct BankCatalog {
@@ -83,6 +84,7 @@ struct CreditCardItem: Identifiable, Codable, Equatable {
 }
 
 
+
 // MARK: - Business Logic (status + assets)
 
 extension CreditCardItem {
@@ -143,6 +145,22 @@ enum CardsStorage {
         UserDefaults.standard.set(data, forKey: key)
     }
 }
+
+// MARK: - Pro (flag + limits)
+
+enum ProManager {
+    private static let key = "fintrack_is_pro_v1"
+
+    static var isPro: Bool {
+        get { UserDefaults.standard.bool(forKey: key) }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+}
+
+enum Monetization {
+    static let freeCardsLimit = 3
+}
+
 
 // MARK: - UI Components
 
@@ -288,38 +306,64 @@ struct ContentView: View {
     @State private var isDark = false
     @State private var showAddCard = false
     @State private var editingItem: CreditCardItem?
+    @State private var showPro = false
+    @State private var proTick = 0
 
-    @State private var items: [CreditCardItem] = [
-        CreditCardItem(
-            bankCode: "bbva",
-            bankName: "BBVA",
-            cardType: "Azul",
-            lastDigits: "4582",
-            cutDate: Date(),
-            dueDate: Date().addingTimeInterval(60*60*24*5),
-            isPaid: false
-        ),
-        CreditCardItem(
-            bankCode: "banamex",
-            bankName: "Banamex",
-            cardType: "Clásica",
-            lastDigits: "1020",
-            cutDate: Date(),
-            dueDate: Date().addingTimeInterval(60*60*24*1),
-            isPaid: true
-        ),
-        CreditCardItem(
-            bankCode: "santander",
-            bankName: "Santander",
-            cardType: "LikeU",
-            lastDigits: "8891",
-            cutDate: Date(),
-            dueDate: Date().addingTimeInterval(-(60*60*24*2)),
-            isPaid: false
-        )
-    ]
+
+    @State private var items: [CreditCardItem] = []
+    
+    @ViewBuilder
+    private var upgradeBanner: some View {
+        if limitReached {
+            HStack(spacing: 12) {
+                Image(systemName: "crown.fill")
+                    .font(.title3.weight(.semibold))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Límite Free alcanzado")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Desbloquea tarjetas ilimitadas, widget y más.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(12)
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .onTapGesture {
+                showPro = true
+            }
+        } else if !ProManager.isPro {
+            // opcional: cuando aún tienes espacio, muestra "te quedan X"
+            HStack(spacing: 12) {
+                Image(systemName: "info.circle.fill")
+                    .font(.title3.weight(.semibold))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Plan Free")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Te quedan \(remainingSlots) espacio(s) para tarjetas.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+            .padding(12)
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
 
     var body: some View {
+        let _ = proTick
         
         ZStack {
             LinearGradient(
@@ -333,6 +377,10 @@ struct ContentView: View {
                 
                 List {
                     Section {
+                        
+                        upgradeBanner
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 6, trailing: 16))
+                        
                         // --- Mini Dashboard ---
 
                             HStack(spacing: 12) {
@@ -473,28 +521,56 @@ struct ContentView: View {
                 
                 .scrollContentBackground(.hidden)
                 .listStyle(.plain)
-                .navigationTitle("Mis Tarjetas")
+                .navigationTitle(ProManager.isPro ? "Mis Tarjetas • Pro" : "Mis Tarjetas")
                 .tint(Color("Accent"))
                 .toolbar {
                     ToolbarItemGroup(placement: .topBarTrailing) {
-                        Button("Agregar") { showAddCard = true }
+
+                        // 👑 Pro / Upgrade (solo si NO es Pro)   ✅ (CAMBIO 3)
+                        if !ProManager.isPro {
+                            Button {
+                                showPro = true
+                            } label: {
+                                Image(systemName: "crown")
+                            }
+                        }
+
+                        // ➕ Agregar
+                        Button("Agregar") {
+                            let limitReached = !ProManager.isPro && items.count >= Monetization.freeCardsLimit
+                            if limitReached {
+                                showPro = true
+                            } else {
+                                showAddCard = true
+                            }
+                        }
+
+                        // 🌙 Dark/Light
                         Button { isDark.toggle() } label: {
                             Image(systemName: isDark ? "moon.fill" : "moon")
                         }
                     }
                 }
                 .sheet(isPresented: $showAddCard) {
-                    AddCardView { newItem in
+                    AddCardView(currentCount: items.count) { newItem in
                         items.append(newItem)
                         scheduleDueNotifications(for: newItem)
                         scheduleCutNotifications(for: newItem)
+                    }
+                }
 
+                .sheet(isPresented: $showPro) {
+                    ProView {
+                        proTick += 1          // 👈 fuerza refresh
+                        showPro = false  // cierra la hoja de Pro
                     }
                 }
                 .sheet(item: $editingItem) { item in
                     EditCardView(item: item) { updated in
                         if let index = items.firstIndex(where: { $0.id == item.id }) {
                             items[index] = updated
+                            removeDueNotifications(for: updated)
+                            removeCutNotifications(for: updated)
                             scheduleDueNotifications(for: updated)
                             scheduleCutNotifications(for: updated)
                         }
@@ -523,6 +599,14 @@ struct ContentView: View {
 
     private var countActive: Int {
         items.filter { !$0.isPaid }.count
+    }
+    
+    private var limitReached: Bool {
+        !ProManager.isPro && items.count >= Monetization.freeCardsLimit
+    }
+
+    private var remainingSlots: Int {
+        max(0, Monetization.freeCardsLimit - items.count)
     }
 
     
@@ -722,9 +806,90 @@ struct ContentView: View {
 
 }
 
+// MARK: - Pro Screen (placeholder)
+
+struct ProView: View {
+    @Environment(\.dismiss) private var dismiss
+    let onActivated: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 14) {
+                Image(systemName: "crown.fill")
+                    .font(.system(size: 40, weight: .bold))
+                    .padding(.top, 14)
+
+                Text("Fintrack Pro")
+                    .font(.title.bold())
+
+                Text("Desbloquea tarjetas ilimitadas, widget y más.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+
+                Button {
+                    ProManager.isPro = true
+                    onActivated()
+                    dismiss()
+                } label: {
+                    Text("Activar Pro (demo)")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color("AccentSoft"))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 20)
+                
+                Button {
+                    ProManager.isPro = true   // ✅ (CAMBIO 4) simula restaurar compra (demo)
+                    onActivated()
+                    dismiss()
+                } label: {
+                    Text("Restaurar (demo)")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color(.systemGray6))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 20)
+
+                #if DEBUG
+                Button {
+                    ProManager.isPro = false
+                    onActivated()
+                    dismiss()
+                } label: {
+                    Text("Quitar Pro (debug)")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.red)
+                }
+                .padding(.top, 4)
+                #endif
+
+
+                Button("Cerrar") { dismiss() }
+                    .padding(.top, 6)
+
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("Mejorar")
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+}
+
+
+
 // MARK: - Add View
 
 struct AddCardView: View {
+    let currentCount: Int
     let onSave: (CreditCardItem) -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -740,9 +905,34 @@ struct AddCardView: View {
     @State private var cutDate = Date()
     @State private var dueDate = Date()
 
+    @State private var showPro = false
+
+    private var limitReached: Bool {
+        !ProManager.isPro && currentCount >= Monetization.freeCardsLimit
+    }
+
     var body: some View {
         NavigationStack {
             Form {
+
+                if limitReached {
+                    Section {
+                        HStack(spacing: 12) {
+                            Image(systemName: "crown.fill")
+                                .font(.title3.weight(.semibold))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Límite Free alcanzado")
+                                    .font(.subheadline.weight(.semibold))
+                                Text("Activa Pro para agregar tarjetas ilimitadas.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
                 Section("Tarjeta") {
                     Picker("Banco", selection: $selectedBankId) {
                         ForEach(BankCatalog.banks) { bank in
@@ -788,39 +978,22 @@ struct AddCardView: View {
                     Button("Cancelar") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Guardar") {
-                        if selectedBankId == customBankId {
-                            let name = customBankName.trimmingCharacters(in: .whitespacesAndNewlines)
-                            let type = customCardType.trimmingCharacters(in: .whitespacesAndNewlines)
 
-                            let item = CreditCardItem(
-                                bankCode: "generic",
-                                bankName: name.isEmpty ? "Otro" : name,
-                                cardType: type.isEmpty ? "Clásica" : type,
-                                lastDigits: lastDigits,
-                                cutDate: cutDate,
-                                dueDate: dueDate,
-                                isPaid: false
-                            )
-                            onSave(item)
-                            dismiss()
-                        } else {
-                            guard let bank = BankCatalog.banks.first(where: { $0.id == selectedBankId }) else { return }
-
-                            let item = CreditCardItem(
-                                bankCode: bank.id,
-                                bankName: bank.name,
-                                cardType: selectedCardType,
-                                lastDigits: lastDigits,
-                                cutDate: cutDate,
-                                dueDate: dueDate,
-                                isPaid: false
-                            )
-                            onSave(item)
-                            dismiss()
+                    // 👇 Si llegaste al límite: en vez de guardar, abre Pro
+                    if limitReached {
+                        Button("Desbloquear") { showPro = true }
+                    } else {
+                        Button("Guardar") {
+                            saveCard()
                         }
+                        .disabled(!canSave)
                     }
-                    .disabled(!canSave)
+                }
+            }
+            .sheet(isPresented: $showPro) {
+                ProView{
+                    showPro = false
+                    dismiss()
                 }
             }
         }
@@ -843,7 +1016,41 @@ struct AddCardView: View {
             return digitsOk && datesOk && typeOk
         }
     }
+
+    private func saveCard() {
+        if selectedBankId == customBankId {
+            let name = customBankName.trimmingCharacters(in: .whitespacesAndNewlines)
+            let type = customCardType.trimmingCharacters(in: .whitespacesAndNewlines)
+
+            let item = CreditCardItem(
+                bankCode: "generic",
+                bankName: name.isEmpty ? "Otro" : name,
+                cardType: type.isEmpty ? "Clásica" : type,
+                lastDigits: lastDigits,
+                cutDate: cutDate,
+                dueDate: dueDate,
+                isPaid: false
+            )
+            onSave(item)
+            dismiss()
+        } else {
+            guard let bank = BankCatalog.banks.first(where: { $0.id == selectedBankId }) else { return }
+
+            let item = CreditCardItem(
+                bankCode: bank.id,
+                bankName: bank.name,
+                cardType: selectedCardType,
+                lastDigits: lastDigits,
+                cutDate: cutDate,
+                dueDate: dueDate,
+                isPaid: false
+            )
+            onSave(item)
+            dismiss()
+        }
+    }
 }
+
 
 // MARK: - Edit View
 
@@ -950,4 +1157,3 @@ struct EditCardView: View {
 #Preview {
     ContentView()
 }
-
